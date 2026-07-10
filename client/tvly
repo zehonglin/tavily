@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""Thin `tvly` client that forwards to the tavily-gateway.
+
+Drop this in as `/usr/local/bin/tvly` (Linux) or somewhere on PATH (Windows)
+so agent skills that call `tvly <cmd> <args>` transparently hit the gateway.
+
+The gateway does key-pool selection and spawns the real CLI. This wrapper only:
+  1. Parses argv into cmd + args.
+  2. Reads stdin if the caller piped something in.
+  3. POSTs {cmd, args, stdin} to $TAVILY_GATEWAY_URL/exec with the bearer token.
+  4. Streams the response body to stdout byte-for-byte.
+
+Configure via environment (or edit the defaults below):
+  TAVILY_GATEWAY_URL   e.g. http://127.0.0.1:18790
+  TAVILY_GATEWAY_TOKEN the bearer token; if empty, no Authorization header sent
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import json
+from urllib import request, error
+
+GATEWAY_URL = os.environ.get("TAVILY_GATEWAY_URL", "http://127.0.0.1:18790").rstrip("/")
+GATEWAY_TOKEN = os.environ.get("TAVILY_GATEWAY_TOKEN", "")
+HTTP_TIMEOUT = int(os.environ.get("TAVILY_CLIENT_TIMEOUT", "600"))
+
+# The gateway appends this marker after the streamed stdout so we can recover
+# the CLI's real exit code (it is NOT an HTTP trailer; urllib can't read those).
+# Wire form: b"\n" + EXIT_MARKER + "<code>" + b"\n".
+EXIT_MARKER = b"__TVLY_GATEWAY_EXIT__:"
+_EXIT_PREFIX = b"\n" + EXIT_MARKER
+# Hold this many bytes back while streaming so the whole marker is always in our
+# buffer at EOF; max marker is "\n" + 22 + 4-digit code + "\n" ~= 28 bytes.
+EXIT_HOLDBACK = 64
+
+
+def _strip_exit_marker(buf: bytes) -> tuple[bytes, int | None]:
+    """Strip a trailing exit-code marker, returning (output_without_marker, code).
+
+    Returns (buf, None) when no marker is present, i.e. the stream was truncated
+    before the gateway could write its marker.
+    """
+    idx = buf.rfind(_EXIT_PREFIX)
+    if idx == -1:
+        return buf, None
+    body = buf[idx + len(_EXIT_PREFIX):]  # expect "<code>\n"
+    if body.endswith(b"\n") and body[:-1].lstrip(b"-").isdigit():
+        return buf[:idx], int(body[:-1])
+    return buf, None
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        sys.stderr.write("usage: tvly <command> [args...]\n")
+        return 2
+
+    # The CLI's own global flags (--json, --status, --version) can appear before
+    # the subcommand. We split argv into: leading global flags, the cmd, rest.
+    # Known global flags that take no value:
+    no_value_globals = {"--json", "--status", "--version", "--help", "-h", "--no-color"}
+    i = 1
+    leading: list[str] = []
+    while i < len(sys.argv):
+        a = sys.argv[i]
+        if a in no_value_globals:
+            leading.append(a)
+            i += 1
+            continue
+        break
+    rest = sys.argv[i:]
+    if not rest:
+        # Pure global-flag invocation (e.g. `tvly --version`). We still forward
+        # so that version/auth checks hit the real CLI on the gateway host.
+        cmd = "--help"
+        args: list[str] = []
+        leading = []
+    else:
+        cmd = rest[0]
+        args = leading + rest[1:]
+
+    # Only forward stdin if there is actual input (don't block on a tty).
+    stdin_text = None
+    if not sys.stdin.isatty():
+        try:
+            stdin_text = sys.stdin.read()
+        except Exception:
+            stdin_text = None
+        if stdin_text == "":
+            stdin_text = None
+
+    body = json.dumps({"cmd": cmd, "args": args, "stdin": stdin_text}).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if GATEWAY_TOKEN:
+        headers["Authorization"] = f"Bearer {GATEWAY_TOKEN}"
+
+    req = request.Request(f"{GATEWAY_URL}/exec", data=body, headers=headers, method="POST")
+    try:
+        resp = request.urlopen(req, timeout=HTTP_TIMEOUT)
+    except error.HTTPError as exc:
+        try:
+            payload = json.loads(exc.read().decode("utf-8", "replace"))
+            msg = payload.get("error", str(exc))
+        except Exception:
+            msg = str(exc)
+        sys.stderr.write(f"tvly gateway error (HTTP {exc.code}): {msg}\n")
+        return 1
+    except error.URLError as exc:
+        sys.stderr.write(f"tvly gateway unreachable: {exc.reason}\n")
+        return 1
+
+    # Stream the response body to stdout, holding back the final EXIT_HOLDBACK
+    # bytes: the gateway tacks an exit-code marker onto the end that we strip
+    # here to recover the CLI's real exit code. A 2xx response with no marker
+    # means the stream was truncated, so default to failure.
+    pending = bytearray()
+    exit_code = 1
+    try:
+        while True:
+            chunk = resp.read(4096)
+            if not chunk:
+                break
+            pending += chunk
+            if len(pending) > EXIT_HOLDBACK:
+                safe = len(pending) - EXIT_HOLDBACK
+                sys.stdout.buffer.write(bytes(pending[:safe]))
+                del pending[:safe]
+                sys.stdout.buffer.flush()
+    except BrokenPipeError:
+        pass
+
+    data, code = _strip_exit_marker(bytes(pending))
+    sys.stdout.buffer.write(data)
+    sys.stdout.buffer.flush()
+    if code is not None:
+        exit_code = code
+    return exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

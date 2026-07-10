@@ -1,0 +1,45 @@
+# /etc/systemd/system/tavily-gateway.service  (runs as a dedicated unprivileged user)
+#
+# First-time host setup (run once as root):
+#   sudo useradd -r -s /usr/sbin/nologin tavily
+#   sudo mkdir -p /etc/tavily /var/lib/tavily /opt/tavily-gateway
+#   sudo cp gateway/tavily_gateway.py /opt/tavily-gateway/
+#   sudo install -m 640 -o root -g tavily keys.json /etc/tavily/keys.json
+#   sudo chown -R tavily:tavily /var/lib/tavily
+#   # tvly must be reachable BY THE tavily USER: install it into /usr/local/bin
+#   # (e.g. `pipx install tavily-cli` as a normal user, then copy the wrapper to
+#   # /usr/local/bin), or set TVLY_BIN below to its absolute path.
+#
+# Deploy with: sudo cp tavily-gateway.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now tavily-gateway
+[Unit]
+Description=Tavily Key-Pool Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tavily
+ExecStart=/usr/bin/python3 /opt/tavily-gateway/tavily_gateway.py
+Restart=always
+RestartSec=5
+# --- required config ---
+Environment=TAVILY_GATEWAY_TOKEN=CHANGE_ME_TO_A_LONG_RANDOM_STRING
+# --- optional config (defaults shown) ---
+Environment=TAVILY_KEYS_FILE=/etc/tavily/keys.json
+Environment=TAVILY_USAGE_CACHE=/var/lib/tavily/usage_cache
+Environment=TAVILY_CACHE_TTL=300
+Environment=TAVILY_MAX_CONCURRENT=8
+Environment=TAVILY_EXEC_TIMEOUT=600
+Environment=TAVILY_KEY_COOLDOWN=60
+Environment=TAVILY_GATEWAY_HOST=0.0.0.0
+Environment=TAVILY_GATEWAY_PORT=18790
+Environment=TVLY_BIN=tvly
+# tvly runs as the tavily user; make sure it is on this PATH.
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# Drop privileges and forbid gaining new ones. Further hardening
+# (ProtectSystem=/ProtectHome=/ReadWritePaths=) depends on where tvly writes;
+# enable it only after confirming tvly's filesystem needs.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

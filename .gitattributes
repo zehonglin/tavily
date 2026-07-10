@@ -1,0 +1,7 @@
+# Default: LF in the repo. client/tvly ships a shebang and is deployed to Linux,
+# so it must never pick up CRLF from a Windows checkout.
+* text=auto eol=lf
+
+# Windows-only wrappers are fine (and conventional) with CRLF.
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

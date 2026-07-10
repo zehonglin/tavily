@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Secrets / runtime state — never commit
+keys.json
+**/keys.json
+*.env
+.env
+usage_cache
+.usage_cache
+*.tmp
