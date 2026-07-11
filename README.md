@@ -109,20 +109,25 @@ TVLY_CLIENT_SCRIPT=C:\Users\你\bin\tvly     # 指向那个无扩展名的 pytho
 对搜索 query 没影响,但若管道传含 `\r\n` 的二进制内容会被改写。搜索场景
 不受影响。
 
-**安装 skill(顺序很重要):** `tvly skills install` 会把 skill 写到**执行它的
-那台机器**。换上瘦客户端后,agent 上的 `tvly` 已经是转发脚本,这时再跑
-`tvly skills install` 会装到**网关主机**而不是 agent。正确顺序是:**先**在 agent
-上用真正的 tvly 装 skill(或直接手动放 `SKILL.md`),**再**把 `tvly` 替换成瘦客户端。
+**安装/升级 skill:** 用官方方式装 Tavily skill,和 `tvly` 无关、也和瘦客户端无关,
+随时可跑:`npx skills add https://github.com/tavily-ai/skills`。
+它只把 `SKILL.md` 写到本机 agent 框架的 skill 目录(Claude Code 是 `~/.claude/skills/`)。
+skill 运行时调 `tvly …`,瘦客户端透明转发,无需为 skill 改任何东西。
 
 验证:`tvly search "hello" --json --max-results 1` 应返回与本地 CLI 完全
 一致的 JSON。
 
 ## 更新方式
 
-- tavily 发布新版 CLI:在网关主机上 `pipx upgrade tavily-cli`。网关代码、
-  thin client、skill 全部无需改动。
-- tavily 发布新版 skill:在每台 agent 机器上执行 `tvly skills install`。
-- 你修改了网关的 token 或地址:只需更新 thin client 的环境变量。
+- **tavily 发布新版 CLI**:在网关主机升级 tvly 并重启:
+  `/opt/tavily-gateway/venv/bin/pip install -U tavily-cli && systemctl restart tavily-gateway`
+  (若你当初按 pipx 部署,则用 `pipx upgrade tavily-cli`)。网关代码、瘦客户端、skill 都不用改。
+- **tavily 发布新版 skill**:每台 agent 跑 `npx skills add https://github.com/tavily-ai/skills`。
+  只写本地 `SKILL.md`、不走 `tvly`,和瘦客户端互不影响,没有安装顺序问题。
+- **改网关 token / 地址**:改网关 drop-in
+  (`/etc/systemd/system/tavily-gateway.service.d/override.conf`)→
+  `systemctl daemon-reload && systemctl restart tavily-gateway`;再同步到每台 agent
+  (瘦客户端里的 baked 值,或 `TAVILY_GATEWAY_URL`/`TAVILY_GATEWAY_TOKEN` 环境变量)。
 
 ## 安全说明
 
